@@ -1,0 +1,4 @@
+const url=process.argv[2];
+const response=await fetch("http://localhost:5000/api/analyze",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({repositoryUrl:url})});
+const text=await response.text();
+for(const line of text.trim().split("\n")){const item=JSON.parse(line);if(item.type==="progress")console.log(item.phase);else if(item.type==="error")console.log("ERROR",item.message);else{const ai=item.report.ai;console.log(JSON.stringify({repository:item.report.repository.fullName,score:ai.score,band:ai.confidenceLevel,evidenceConfidence:ai.confidence,coverage:ai.coverage,signals:ai.signals.map(s=>({name:s.name,score:s.score})),files:ai.fileResults.map(f=>({path:f.path,score:f.score,evidence:f.evidence.slice(0,1)})),evidence:ai.evidence},null,2));}}

@@ -95,7 +95,9 @@ Returns a recent in-memory report. Reports are process-local and are evicted aft
 
 ### AI Generation Confidence
 
-The score is a deterministic weighted combination of observable signals: code repetition and generic naming, large commit additions, README structure, repository evolution, repeated structures, and boilerplate markers. It includes signal scores and evidence so users can inspect what influenced it.
+The score is a deterministic weighted estimate from five inspectable signals: explicit AI/tool attribution in sampled files (50%), exact repeated four-line blocks across files (15%), repeated multi-property object shapes (15%), concentration in detailed commit changes (12%), and a small set of generic commit-message templates (8%). Each signal exposes its score, weight, basis, and supporting evidence. File-level results identify sampled paths, line counts, and relevant signals. Generated and lock files are excluded; up to 40 source/configuration files are selected with configuration and README files prioritized and source folders sampled evenly.
+
+Evidence confidence is separate from the estimated signal score. It reflects the share of eligible files and retrieved commits with detailed change statistics that were analyzed; it does not express certainty about authorship. The current GitHub integration retrieves a bounded commit history and detailed stats for only a subset. Missing history and unobserved source reduce evidence coverage. Naming conventions, README length, and ordinary repeated identifiers are not treated as AI authorship evidence; repeated code/schema structures and large commits carry only weak weight because they have common human-written explanations.
 
 **The AI-generation score is a heuristic and is not proof of AI authorship.** Similar code can result from templates, conventions, generated files, or human work. A low score does not prove that AI was not used. Sampling and incomplete history can affect the result.
 
