@@ -1,33 +1,34 @@
 import yauzl from 'yauzl';
 import path from 'node:path';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import {randomUUID} from 'node:crypto';
 import {analyzeAI, type AIFileInput} from '../analyzers/aiGenerationAnalyzer.js';
+import {analyzeCodeIntelligence} from '../analyzers/codeIntelligence.js';
 import {ANALYSIS_MAX_FILE_BYTES, ANALYSIS_MAX_FILES, isAnalysisCandidate, isIgnoredPath, selectAnalysisFiles} from '../analyzers/projectAnalyzer.js';
 import type {AnalysisFile, ProgressUpdate, RepoFile, RepoReport} from '../types.js';
 
 const supported=/\.(?:[cm]?[jt]sx?|py|java|c|h|cc|cpp|hpp|cs|go|rs|php|rb|swift|kt|kts|scala|ex|exs|erl|hrl|lua|pl|pm|r|jl|dart|vue|svelte|astro|html|css|scss|less|sql|sh|bash|ps1|tf|hcl|json|ya?ml|toml|ini|xml|md)$/i;
 const ignoredNames=new Set(['package-lock.json','npm-shrinkwrap.json','pnpm-lock.yaml','yarn.lock','bun.lock','bun.lockb','poetry.lock','pdm.lock','cargo.lock','composer.lock','gemfile.lock']);
 const generated=/(?:\.min\.[^.]+|\.generated\.[^.]+|\.g\.[^.]+|\.pb\.[^.]+|\.freezed\.dart|\.lock)$/i;
-const maxUploadBytes=setting('ZIP_MAX_UPLOAD_BYTES',25*1024*1024,100*1024*1024);
-const maxEntries=setting('ZIP_MAX_ENTRIES',3000,20_000);
+const maxUploadBytes=setting('ZIP_MAX_UPLOAD_BYTES',3*1024*1024*1024,3*1024*1024*1024);
 const maxExpandedBytes=setting('ZIP_MAX_UNCOMPRESSED_BYTES',100*1024*1024,500*1024*1024);
 const maxRatio=setting('ZIP_MAX_COMPRESSION_RATIO',200,1000);
 function setting(key:string,fallback:number,hardMax:number){const value=Number(process.env[key]);return Number.isSafeInteger(value)&&value>0?Math.min(value,hardMax):fallback;}
-export const zipLimits={maxUploadBytes,maxEntries,maxExpandedBytes,maxRatio,maxFileBytes:ANALYSIS_MAX_FILE_BYTES,maxAnalyzedFiles:ANALYSIS_MAX_FILES};
+export const zipLimits={maxUploadBytes,maxExpandedBytes,maxRatio,maxFileBytes:ANALYSIS_MAX_FILE_BYTES,maxAnalyzedFiles:ANALYSIS_MAX_FILES};
 export class ZipAnalysisError extends Error { constructor(public code:string,message:string,status=400){super(message);this.name='ZipAnalysisError';this.status=status;} status:number; }
 type ArchiveRecord={file:RepoFile;content?:string;status:'eligible'|'skipped'|'inaccessible';reason?:string};
 export function safeArchivePath(name:string){if(!name||name.includes('\0')||name.includes('\\')||name.startsWith('/')||/^[a-zA-Z]:/.test(name))return false;const parts=name.replace(/\/$/,'').split('/');return parts.every(part=>part!=='.'&&part!=='..'&&part.length>0);}
 function reasonFor(name:string,size:number){const base=path.posix.basename(name).toLowerCase();if(isIgnoredPath(name))return 'Dependency, version-control, or build-output directory';if(ignoredNames.has(base))return 'Lockfile excluded from source analysis';if(generated.test(name))return 'Generated or minified file';if(/\.map$/i.test(name))return 'Source map excluded from source analysis';if(!supported.test(name))return 'Unsupported or non-source file type';if(/^readme(?:\.|$)/i.test(base))return 'README retained as project context, excluded from source-code signals';if(size>ANALYSIS_MAX_FILE_BYTES)return `File exceeds the ${ANALYSIS_MAX_FILE_BYTES.toLocaleString()} byte analysis limit`;if(!isAnalysisCandidate(name))return 'Not a source or recognized project configuration file';return null;}
-function openArchive(buffer:Buffer,signal?:AbortSignal):Promise<ArchiveRecord[]>{
- if(buffer.length<4||buffer.subarray(0,4).toString('hex')!=='504b0304'&&buffer.subarray(0,4).toString('hex')!=='504b0506'&&buffer.subarray(0,4).toString('hex')!=='504b0708')return Promise.reject(new ZipAnalysisError('invalid_zip','The uploaded file is not a valid ZIP archive.'));
- return new Promise((resolve,reject)=>{yauzl.fromBuffer(buffer,{lazyEntries:true,decodeStrings:true,strictFileNames:false,validateEntrySizes:true},(openError,zip)=>{
+function openArchive(filename:string,signal?:AbortSignal):Promise<ArchiveRecord[]>{
+ return new Promise((resolve,reject)=>{yauzl.open(filename,{lazyEntries:true,decodeStrings:true,strictFileNames:false,validateEntrySizes:true},(openError,zip)=>{
   if(openError||!zip)return reject(new ZipAnalysisError('invalid_zip','The ZIP archive is malformed or could not be opened.'));
-  const records:ArchiveRecord[]=[];const names=new Set<string>();let count=0,totalExpanded=0,finished=false;
+  const records:ArchiveRecord[]=[];const names=new Set<string>();let totalExpanded=0,finished=false;
   const fail=(error:ZipAnalysisError)=>{if(finished)return;finished=true;zip.close();reject(error);};
   zip.on('error',(error:Error)=>fail(/invalid relative path|invalid filename/i.test(error.message)?new ZipAnalysisError('unsafe_path','The ZIP contains an unsafe file path and was rejected.'):new ZipAnalysisError('invalid_zip','The ZIP archive is malformed or could not be read.')));
   zip.on('end',()=>{if(finished)return;finished=true;if(!records.some(record=>record.file.type==='file'))return reject(new ZipAnalysisError('empty_zip','The ZIP archive contains no files.'));resolve(records);});
   zip.on('entry',(entry:yauzl.Entry)=>{
    if(signal?.aborted)return fail(new ZipAnalysisError('cancelled','ZIP analysis was cancelled.',499));
-   count++;if(count>maxEntries)return fail(new ZipAnalysisError('too_many_entries',`The ZIP contains more than the ${maxEntries.toLocaleString()} file and folder limit.`));
    const raw=entry.fileName;if(!safeArchivePath(raw))return fail(new ZipAnalysisError('unsafe_path','The ZIP contains an unsafe file path and was rejected.'));
    const name=raw.replace(/\/$/,'');if(!name){zip.readEntry();return;}
    if(names.has(name))return fail(new ZipAnalysisError('duplicate_path','The ZIP contains duplicate file paths and was rejected.'));names.add(name);
@@ -46,11 +47,13 @@ function openArchive(buffer:Buffer,signal?:AbortSignal):Promise<ArchiveRecord[]>
  });});
 }
 function languageFor(file:RepoFile){const ext=file.extension??'';const map:Record<string,string>={ts:'TypeScript',tsx:'TypeScript',js:'JavaScript',jsx:'JavaScript',mjs:'JavaScript',cjs:'JavaScript',py:'Python',java:'Java',go:'Go',rs:'Rust',html:'HTML',css:'CSS',scss:'SCSS',json:'JSON',yaml:'YAML',yml:'YAML',toml:'TOML',md:'Markdown'};return map[ext];}
-export async function analyzeZipBuffer(buffer:Buffer,filename:string,progress:(event:ProgressUpdate)=>void,signal?:AbortSignal):Promise<RepoReport>{
- if(buffer.length>maxUploadBytes)throw new ZipAnalysisError('upload_too_large',`ZIP uploads are limited to ${Math.round(maxUploadBytes/1024/1024)} MB.`,413);
+export async function analyzeZipFile(archivePath:string,filename:string,archiveBytes:number,progress:(event:ProgressUpdate)=>void,signal?:AbortSignal):Promise<RepoReport>{
+ if(archiveBytes>maxUploadBytes)throw new ZipAnalysisError('upload_too_large','ZIP uploads are limited to 3 GB.',413);
+ const handle=await fs.open(archivePath,'r');const signature=Buffer.alloc(4);const read=await handle.read(signature,0,4,0);await handle.close();
+ if(read.bytesRead<4||!['504b0304','504b0506','504b0708'].includes(signature.toString('hex')))throw new ZipAnalysisError('invalid_zip','The uploaded file is not a valid ZIP archive.');
  progress({type:'progress',mode:'zip',stage:'input_received',status:'complete',message:'ZIP upload received and size validated.'});
  progress({type:'progress',mode:'zip',stage:'source_connected',status:'active',message:'Validating archive structure and paths.'});
- const records=await openArchive(buffer,signal);if(signal?.aborted)throw new ZipAnalysisError('cancelled','ZIP analysis was cancelled.',499);progress({type:'progress',mode:'zip',stage:'source_connected',status:'complete',message:'Archive validated; no files were extracted or executed.'});
+ const records=await openArchive(archivePath,signal);if(signal?.aborted)throw new ZipAnalysisError('cancelled','ZIP analysis was cancelled.',499);progress({type:'progress',mode:'zip',stage:'source_connected',status:'complete',message:'Archive validated; no files were extracted or executed.'});
  progress({type:'progress',mode:'zip',stage:'structure_scanned',status:'active',message:'Enumerating archive contents.'});
  const candidateFiles=records.filter(r=>r.status==='eligible');const selection=selectAnalysisFiles(candidateFiles.map(r=>r.file));const selected=new Set(selection.selected.map(f=>f.path));
  for(const record of candidateFiles)if(!selected.has(record.file.path)){record.status='skipped';record.reason='Outside the configurable balanced analysis sample';}
@@ -71,7 +74,13 @@ export async function analyzeZipBuffer(buffer:Buffer,filename:string,progress:(e
  progress({type:'progress',mode:'zip',stage:'signals_evaluated',status:'complete',message:'Source signals evaluated; history-dependent signals were excluded.'});
  progress({type:'progress',mode:'zip',stage:'evidence_reviewed',status:'active',message:'Preparing file coverage and analysis limitations.'});progress({type:'progress',mode:'zip',stage:'evidence_reviewed',status:'complete',message:'Coverage and skipped-file reasons are attached to the report.',counts:{discovered,eligible:candidateFiles.length,analyzed:picked.length,skipped:skippedCount}});
  const archiveName=path.posix.basename(filename).replace(/\.zip$/i,'')||'uploaded-project';
- const report:RepoReport={sourceMode:'zip',repository:{name:archiveName,fullName:filename,owner:'Uploaded archive',avatar:'',url:null,description:null,private:null,defaultBranch:null,createdAt:null,updatedAt:null,stars:null,forks:null,watchers:null,issues:null,license:null,topics:[],treeTruncated:false,repoSizeKb:Math.round(buffer.length/1024)},files:records.map(r=>r.file),analysisFiles,languages:languageBytes,commits:[],contributors:[],technologies:[...technologies],stats:{totalFiles:discovered,directories:records.filter(r=>r.file.type==='dir').length,totalLines:picked.reduce((sum,f)=>sum+(f.content??'').split(/\r?\n/).filter(line=>line.trim()).length,0),sampledFiles:picked.length,firstCommit:null,latestCommit:null,totalCommits:null,largestFiles:records.filter(r=>r.file.type==='file').sort((a,b)=>b.file.size-a.file.size).slice(0,8).map(r=>({path:r.file.path,size:r.file.size})),averageCommitsPerWeek:null,commitsPerMonth:[]},ai,health:{score:healthScore,method:'Internal Project Health Heuristic',signals:healthSignals},repositoryCoverage:{sourceMode:'zip',repositoryMetadataAvailable:false,filesDiscovered:discovered,eligibleFiles:candidateFiles.length,filesAnalyzed:picked.length,filesSkipped:skippedCount,commitHistory:'unavailable for ZIP archive',metadata:'archive manifest only',analysisLimitFiles:ANALYSIS_MAX_FILES,analysisLimitFileBytes:ANALYSIS_MAX_FILE_BYTES}};
+ const intelligence=analyzeCodeIntelligence(contents.map(f=>({path:f.path,content:f.content})));
+ const report:RepoReport={sourceMode:'zip',repository:{name:archiveName,fullName:filename,owner:'Uploaded archive',avatar:'',url:null,description:null,private:null,defaultBranch:null,createdAt:null,updatedAt:null,stars:null,forks:null,watchers:null,issues:null,license:null,topics:[],treeTruncated:false,repoSizeKb:Math.round(archiveBytes/1024)},files:records.map(r=>r.file),analysisFiles,languages:languageBytes,commits:[],contributors:[],technologies:[...technologies],stats:{totalFiles:discovered,directories:records.filter(r=>r.file.type==='dir').length,totalLines:picked.reduce((sum,f)=>sum+(f.content??'').split(/\r?\n/).filter(line=>line.trim()).length,0),sampledFiles:picked.length,firstCommit:null,latestCommit:null,totalCommits:null,largestFiles:records.filter(r=>r.file.type==='file').sort((a,b)=>b.file.size-a.file.size).slice(0,8).map(r=>({path:r.file.path,size:r.file.size})),averageCommitsPerWeek:null,commitsPerMonth:[]},ai,health:{score:healthScore,method:'Internal Project Health Heuristic',signals:healthSignals},repositoryCoverage:{sourceMode:'zip',repositoryMetadataAvailable:false,filesDiscovered:discovered,eligibleFiles:candidateFiles.length,filesAnalyzed:picked.length,filesSkipped:skippedCount,commitHistory:'unavailable for ZIP archive',metadata:'archive manifest only',analysisLimitFiles:ANALYSIS_MAX_FILES,analysisLimitFileBytes:ANALYSIS_MAX_FILE_BYTES},intelligence};
  progress({type:'progress',mode:'zip',stage:'report_generated',status:'complete',message:'ZIP project report is ready.',counts:{discovered,eligible:candidateFiles.length,analyzed:picked.length,skipped:skippedCount}});return report;
 }
 export const uploadLimitBytes=maxUploadBytes;
+export async function analyzeZipBuffer(buffer:Buffer,filename:string,progress:(event:ProgressUpdate)=>void,signal?:AbortSignal){
+ const archivePath=path.join(os.tmpdir(),`reposcope-test-${randomUUID()}.zip`);
+ await fs.writeFile(archivePath,buffer,{flag:'wx'});
+ try{return await analyzeZipFile(archivePath,filename,buffer.length,progress,signal);}finally{await fs.rm(archivePath,{force:true});}
+}

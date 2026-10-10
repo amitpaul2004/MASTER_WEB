@@ -12,9 +12,12 @@ RepoScope is a full-stack repository intelligence application. It retrieves publ
 - Optional safe public website inspection and technology overlap comparison
 - Internal Project Health Heuristic
 - JSON report export
-- Optional in-memory ZIP upload analysis with no extraction or code execution
+- Disk-backed ZIP upload analysis with no extraction or code execution
 - Typed NDJSON progress events and separate source, evidence-confidence, and repository-coverage metrics
 - Five-minute in-memory GitHub caching and configurable, balanced file sampling
+- Static architecture links, pattern-based security and maintainability findings, manifest dependencies, and file risk indicators
+- Optional report-grounded repository Q&A when a server-side chat provider is configured
+- Local-browser saved report identifiers and HTML/print exports
 
 ## Architecture
 
@@ -51,10 +54,12 @@ The web app runs at `http://localhost:5173`; the API runs at `http://localhost:5
 | `CLIENT_ORIGIN` | Allowed browser origin for CORS (default `http://localhost:5173`). |
 | `ANALYSIS_MAX_FILES` | Source/config files sampled per analysis (default `25`, hard cap `500`). |
 | `ANALYSIS_MAX_FILE_BYTES` | Maximum bytes read per source file (default `250000`, hard cap `2000000`). |
-| `ZIP_MAX_UPLOAD_BYTES` | Maximum uploaded ZIP size (default `26214400`, hard cap `104857600`). |
-| `ZIP_MAX_ENTRIES` | Maximum archive files and folders (default `3000`, hard cap `20000`). |
+| `ZIP_MAX_UPLOAD_BYTES` | Maximum uploaded ZIP size (default and hard cap `3221225472` bytes / 3 GiB). |
 | `ZIP_MAX_UNCOMPRESSED_BYTES` | Maximum total expanded archive size (default `104857600`, hard cap `524288000`). |
 | `ZIP_MAX_COMPRESSION_RATIO` | Maximum allowed expansion ratio for large archive entries (default `200`, hard cap `1000`). |
+| `CHAT_COMPLETIONS_URL` | Optional OpenAI-compatible chat completions endpoint. |
+| `CHAT_API_KEY` | Optional server-only chat provider credential. |
+| `CHAT_MODEL` | Optional configured model identifier. |
 
 Use a fine-grained token with read access to public repositories. Never put this value in a `VITE_` variable or browser code. Copy `.env.example` to `.env` and keep `.env` untracked.
 
@@ -67,7 +72,7 @@ npm start         # Start compiled API
 npm test          # Run analyzer, API integration, and UI accessibility-contract tests
 ```
 
-For production, serve the Vite `dist/` output with a static host and run the compiled API behind the same origin or configure the frontend proxy at the deployment edge. Set `CLIENT_ORIGIN` to the exact trusted origin.
+For production, serve the Vite `dist/` output with a static host and run the compiled API behind the same origin or configure the frontend proxy at the deployment edge. Set `CLIENT_ORIGIN` to the exact trusted origin. Optional chat requires an OpenAI-compatible endpoint, model, and API key configured only in the server environment. The assistant receives report metadata and findings, not retained source text.
 
 ## API
 
@@ -94,7 +99,7 @@ Returns a recent in-memory report. Reports are process-local and are evicted aft
 
 ### `POST /api/analyze/zip`
 
-Multipart form-data with one `archive` field containing a `.zip` file. The endpoint validates archive paths, symlinks, entry counts, declared expansion size, and suspicious compression ratios. It reads eligible UTF-8 source/config files in memory, never extracts the archive, and never runs uploaded code. The stream reports ZIP-specific progress; commit-history steps are omitted.
+Multipart form-data with one `archive` field containing a `.zip` file, up to 3 GiB compressed. Multer writes the incoming upload to a temporary file and yauzl reads entries from that file; the complete archive is never buffered in RAM or extracted. The endpoint validates archive paths and symlinks, enforces aggregate expansion and per-file safety budgets, and never runs uploaded code. There is no fixed entry-count rejection. The stream reports ZIP-specific progress; commit-history steps are omitted.
 
 ## Analysis limits and methodology
 
@@ -102,7 +107,7 @@ Multipart form-data with one `archive` field containing a `.zip` file. The endpo
 - Up to 500 default-branch commits are retrieved. Detailed additions/deletions/files changed are requested for the latest 20 commits to bound API usage; unavailable details are shown as unavailable.
 - `ANALYSIS_MAX_FILES` source/configuration files are sampled using configuration prioritization and round-robin source-folder sampling. Per-file byte limits are also configurable. `analysisFiles` records analyzed, skipped, and inaccessible paths with reasons. README files provide context but are excluded from ordinary source signals. Lockfiles, generated/minified files, vendored/dependency folders, build output, unsupported formats, binary content, and oversized files are excluded and reported.
 - GitHub trees can be truncated. In that case repository discovery coverage is marked incomplete and evidence confidence is reduced. GitHub content-fetch failures remain visible as inaccessible rather than becoming empty source. Commit history is bounded to the latest 500 commits and detailed additions/deletions are fetched for the latest 20; the report discloses the retrieved and detailed counts.
-- ZIP uploads default to 25 MiB compressed, 3,000 entries, and 100 MiB total declared expanded content. Per-file and sampled-file limits use the analysis settings above. Runtime hard caps prevent unsafe configuration values. Upload bytes are held in memory only and cleared after request processing; no temporary extraction directory is created.
+- ZIP uploads accept up to 3 GiB compressed by default and have no entry-count cap. The server streams uploads to `os.tmpdir()/reposcope-uploads` and removes each temporary archive after success or failure. The deployment proxy must allow request bodies of at least 3 GiB and suitable request timeouts; many serverless/static hosts impose lower hard limits, so use a dedicated Node service and reverse proxy configured for 3 GiB (for nginx, configure `client_max_body_size 3g` and a long `client_body_timeout`). Configure temporary disk capacity and quotas for concurrent uploads.
 - Language shares use GitHub's language API byte totals.
 - Technology detection is based on observed manifests/configuration and limited source fingerprints; absence means unable to determine.
 - Website checks use public HTTP(S) GET requests, reject credentials/local hostnames, disable redirects, apply a timeout, and inspect at most the first 1 MB of HTML. The site can still be unreachable or block automated clients.
@@ -131,10 +136,20 @@ The Project Health Score is an internal heuristic informed by README presence, t
 - Only public GitHub repositories can be analyzed unless the server token has access; private repository support is not exposed by the URL-only flow.
 - Website analysis is limited to public page metadata and resource fingerprints. It does not scan ports, bypass authentication, or exploit the target.
 - No source is sent to an external AI service. The deterministic heuristic runs locally in the application server.
-- ZIP handling uses in-memory multipart uploads and streaming entry reads. Path traversal and symlink entries are rejected; source is never extracted or executed. Keep the configurable upload and expansion limits appropriate for the host.
+- ZIP handling uses disk-backed multipart uploads and streamed entry reads. Path traversal and symlink entries are rejected; source is never extracted or executed. Aggregate expansion and per-file safeguards can reject an archive independently of its compressed size. The 3 GiB ceiling applies only when the full deployment path supports it.
 - Public website DNS results are validated and the selected public address is pinned for the HTTP request; redirects are not followed. Continue to apply outbound network restrictions in production.
 - Website URLs are untrusted input. For public production deployments, enforce egress firewall rules that block private, link-local, and metadata IP ranges as an additional SSRF boundary.
 
 ## Current limitations / future improvements
 
 Analysis is limited to the default branch and a bounded recent commit sample. Source heuristics are not a reliable authorship detector and have not been calibrated against a representative labeled corpus. ZIP archives have no Git history unless a user separately analyzes the repository through GitHub. Browser screenshot automation is not included in the current toolchain; layout adapts at desktop, tablet, and mobile breakpoints and the reveal/ambient effects respect `prefers-reduced-motion`.
+
+
+## Code intelligence workspace
+
+The dashboard includes a graph view built from resolved static JS/TS import patterns and recognized Express route declarations. Unresolved local imports remain explicit. Dynamic and runtime relationships are not inferred. Security checks are heuristic pattern matches with redacted evidence; they require manual verification and are not a certification. Maintainability checks flag large files and long function-like blocks. Dependency intelligence currently reads declared dependencies in sampled package.json manifests; transitive resolution, advisory feeds, and license lookup are not configured. The risk panel summarizes observed static findings with a capped per-file heuristic score.
+
+Saved reports keep identifiers in local browser storage and use the server's process-local report cache. They expire on server restart or cache eviction; no account database or multi-user persistence is present. HTML reports and browser print-to-PDF are available. Repository replay uses retrieved commit metadata only and does not reconstruct historical source snapshots. Chat is optional; without provider variables it falls back to report-fact answers, and it cannot explain source text that is not retained in the report.
+
+
+
