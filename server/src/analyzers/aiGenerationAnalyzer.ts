@@ -1,112 +1,54 @@
-export type AIFileInput = { path:string; content:string };
-export type AICommitInput = { message:string; additions:number|null; deletions?:number|null; filesChanged?:number|null; date:string };
-export type AIInput = {
-  files:AIFileInput[];
-  commits:AICommitInput[];
-  readme?:string;
-  totalCandidateFiles?:number;
-  detailedCommitCount?:number;
-};
-
-type Signal = { name:string; score:number; weight:number; contribution:number; basis:string; evidence:string[] };
+export type AIFileInput={path:string;content:string};
+export type AICommitInput={message:string;additions:number|null;deletions?:number|null;filesChanged?:number|null;date:string};
+export type AIHistoryStatus='available'|'unavailable'|'not_applicable';
+export type AISkippedFile={path:string;reason:string;status?:'skipped'|'inaccessible'};
+export type AIInput={files:AIFileInput[];commits:AICommitInput[];readme?:string;totalCandidateFiles?:number;detailedCommitCount?:number;discoveredFiles?:number;skippedFiles?:AISkippedFile[];historyStatus?:AIHistoryStatus;discoveryComplete?:boolean};
+type Signal={name:string;score:number;weight:number;contribution:number;basis:string;evidence:string[];available:boolean};
 const clamp=(n:number)=>Math.max(0,Math.min(100,Math.round(Number.isFinite(n)?n:0)));
-const humanText=(s:string)=>s.replace(/\r/g,'');
 const generatedName=/(?:\.min\.[^.]+|\.generated\.[^.]+|\.g\.[^.]+|\.pb\.[^.]+|\.freezed\.dart|\.lock)$/i;
-const explicitCode=/\b(?:AI|LLM|ChatGPT|Claude|Copilot|Cursor|Windsurf|Gemini|Codeium|Devin)[- ](?:generated|written|authored|created)\b|\b(?:generated|written|authored|created)\s+(?:by|with|using)\s+(?:(?:an?|the)\s+)?(?:AI|LLM|ChatGPT|Claude(?:\s+Code)?|GitHub\s+Copilot|Copilot|Cursor|Windsurf|Gemini|Codeium|Devin)\b|\bas an AI language model\b/i;
+const readmeName=/^readme(?:\.|$)/i;
+const attribution=/\b(?:AI|LLM|ChatGPT|Claude(?:\s+Code)?|GitHub\s+Copilot|Copilot|Cursor|Windsurf|Gemini|Codeium|Devin)[- ](?:generated|written|authored|created)\b|\b(?:generated|written|authored|created)\s+(?:by|with|using)\s+(?:(?:an?|the)\s+)?(?:AI|LLM|ChatGPT|Claude(?:\s+Code)?|GitHub\s+Copilot|Copilot|Cursor|Windsurf|Gemini|Codeium|Devin)\b|\bas an AI language model\b/i;
+const attributionComment=/^\s*(?:\/\/|#|\/\*+|\*|<!--)/;
 const genericCommit=/^(?:initial commit|update(?: code| files?)?|first commit|initial version|generated code|implement (?:the )?app|build (?:the )?app)$/i;
-const ignoredLines=/^(?:[{}()[\],;]|import\s|export\s|from\s|#include\s|using\s+.+;?$|package\s+\w+;?)$/i;
-
-function codeLines(content:string){return humanText(content).split('\n').map(x=>x.trim()).filter(x=>x.length>=24&&!ignoredLines.test(x)&&!/^\/\/|^\*|^#/.test(x));}
-function duplicateBlockSignals(files:AIFileInput[]){
-  const occurrence=new Map<string,Set<string>>();
-  for(const file of files){const lines=codeLines(file.content),seen=new Set<string>();for(let i=0;i+3<lines.length;i++){const block=lines.slice(i,i+4).join('\n');if(seen.has(block))continue;seen.add(block);const owners=occurrence.get(block)??new Set<string>();owners.add(file.path);occurrence.set(block,owners);}}
-  const duplicated=[...occurrence].filter(([,owners])=>owners.size>1);const total=[...occurrence].length;const ratio=total?duplicated.length/total:0;
-  return {score:clamp(ratio*100),blocks:duplicated.slice(0,5).map(([block,owners])=>({files:[...owners].slice(0,5),sample:block.split('\n')[0].slice(0,120)})),totalBlocks:total};
-}
-function repeatedObjectShapes(files:AIFileInput[]){
-  const byShape=new Map<string,Map<string,number>>();
-  for(const file of files){let keys:string[]=[];let depth=0;const flush=()=>{const shape=[...new Set(keys)].sort();if(shape.length>=4){const owners=byShape.get(shape.join('|'))??new Map<string,number>();owners.set(file.path,(owners.get(file.path)??0)+1);byShape.set(shape.join('|'),owners);}keys=[];};
-    for(const line of humanText(file.content).split('\n')){const trimmed=line.trim();if(!depth&&/\{\s*$/.test(trimmed)){depth=1;keys=[];const inline=trimmed.match(/\{\s*([A-Za-z_$][\w$]*)\s*:/);if(inline)keys.push(inline[1]);continue;}if(depth){const property=trimmed.match(/^([A-Za-z_$][\w$]*)\s*:/);if(property)keys.push(property[1]);const opens=(line.match(/\{/g)??[]).length,closes=(line.match(/\}/g)??[]).length;depth=Math.max(0,depth+opens-closes);if(!depth)flush();}}
-    if(depth)flush();
-  }
-  const repeated=[...byShape].filter(([,owners])=>[...owners.values()].reduce((a,b)=>a+b,0)>1);
-  const repeatedCount=repeated.reduce((sum,[,owners])=>sum+[...owners.values()].reduce((a,b)=>a+b,0)-1,0);
-  return {score:clamp(repeatedCount*10),repeatedCount,files:[...new Set(repeated.flatMap(([,owners])=>[...owners.keys()]))]};
-}
-function sourceSignal(file:AIFileInput){
-  const explicit=humanText(file.content).split('\n').map((line,i)=>({line:line.trim().replace(/^(?:\/\/|#|\*|<!--|\/\*)\s*/,'').replace(/\s*\*\/$|\s*-->$/,''),number:i+1})).filter(x=>x.line&&explicitCode.test(x.line));
-  const contentLines=humanText(file.content).split('\n').filter(x=>x.trim()).length;
-  return {explicit,contentLines};
-}
-function scoreBand(score:number){return score<=20?'Low':score<=40?'Limited':score<=60?'Moderate':score<=80?'High':'Very high';}
+function codeLines(content:string){return content.replace(/\r/g,'').split('\n').map((raw,index)=>({text:raw.trim(),line:index+1})).filter(x=>x.text.length>=28&&!/^(?:[{}()[\],;]|import\s|export\s|from\s|#include\s|using\s+.+;?)$/i.test(x.text)&&!/^\/\/|^\*|^#/.test(x.text));}
+function duplicateBlocks(files:AIFileInput[]){const seen=new Map<string,Map<string,number>>();for(const file of files){const lines=codeLines(file.content);for(let i=0;i+3<lines.length;i++){const block=lines.slice(i,i+4).map(x=>x.text).join('\n');const owners=seen.get(block)??new Map<string,number>();if(!owners.has(file.path))owners.set(file.path,lines[i].line);seen.set(block,owners);}}const repeats=[...seen].filter(([,owners])=>owners.size>1);const ratio=seen.size?repeats.length/seen.size:0;return {score:clamp(ratio*100),evidence:repeats.slice(0,6).map(([block,owners])=>({files:[...owners.keys()],line:[...owners.values()][0],sample:block.split('\n')[0].slice(0,100)})),total:seen.size};}
+function objectShapes(files:AIFileInput[]){const shapes=new Map<string,Map<string,number>>();for(const file of files){const lines=file.content.replace(/\r/g,'').split('\n');for(let i=0;i<lines.length;i++){if(!/\{\s*$/.test(lines[i].trim()))continue;let depth=1;const keys:string[]=[];for(let j=i+1;j<lines.length&&j<i+100&&depth>0;j++){const line=lines[j];const match=line.trim().match(/^([A-Za-z_$][\w$]*)\s*:/);if(match)keys.push(match[1]);depth+=(line.match(/\{/g)??[]).length-(line.match(/\}/g)??[]).length;}const shape=[...new Set(keys)].sort();if(shape.length>=4){const owners=shapes.get(shape.join('|'))??new Map<string,number>();owners.set(file.path,i+1);shapes.set(shape.join('|'),owners);}}}const repeated=[...shapes].filter(([,owners])=>owners.size>1);const count=repeated.reduce((sum,[,owners])=>sum+owners.size-1,0);return {score:clamp(count*8),count,evidence:repeated.slice(0,5).flatMap(([,owners])=>[...owners].map(([file,line])=>({file,line}))) };}
+function band(score:number){return score<=20?'Low':score<=40?'Limited':score<=60?'Moderate':score<=80?'High':'Very high';}
 function confidenceBand(score:number){return score>=75?'High':score>=45?'Moderate':'Low';}
+function isOrdinarySource(file:AIFileInput){return !readmeName.test(file.path.split('/').at(-1)??'')&&!generatedName.test(file.path);}
 
-/**
- * Explainable repository signals, not authorship classification. Direct attribution
- * is separated from weak style/history signals; duplication and commit size never
- * independently imply AI authorship.
- */
+/** Deterministic observable-signal scoring. This is not an authorship classifier or calibrated probability. */
 export function analyzeAI(input:AIInput){
-  const files=input.files.filter(f=>f.content.trim()&&!generatedName.test(f.path));
-  const explicitByFile=files.map(file=>({file,...sourceSignal(file)}));
-  const explicitHits=explicitByFile.flatMap(({file,explicit})=>explicit.map(hit=>({path:file.path,...hit})));
-  const attributionScore=explicitHits.length?clamp(72+Math.min(23,(new Set(explicitHits.map(x=>x.path)).size-1)*8)):0;
-  const duplication=duplicateBlockSignals(files);
-  const duplicateCountByFile=new Map<string,number>();for(const block of duplication.blocks)for(const path of block.files)duplicateCountByFile.set(path,(duplicateCountByFile.get(path)??0)+1);
-  const shapes=repeatedObjectShapes(files);
-  const shapeFiles=new Set(shapes.files);
-  const analyzedCommits=input.commits.filter(c=>c.additions!==null&&c.additions!==undefined);
-  const totalChanges=analyzedCommits.reduce((sum,c)=>sum+Math.max(0,c.additions??0)+Math.max(0,c.deletions??0),0);
-  const sortedChanges=analyzedCommits.map(c=>Math.max(0,c.additions??0)+Math.max(0,c.deletions??0)).sort((a,b)=>b-a);
-  const topShare=totalChanges?sortedChanges.slice(0,Math.max(1,Math.ceil(sortedChanges.length*.1))).reduce((a,b)=>a+b,0)/totalChanges:0;
-  const largeCommitCount=analyzedCommits.filter(c=>(c.additions??0)>1000).length;
-  // A concentrated history is weak context only: it is common in imports, migrations and solo work.
-  const commitConcentration=analyzedCommits.length>=3?clamp(Math.max(0,(topShare-.35)*100)*.55+Math.min(largeCommitCount,3)*8):0;
-  const genericMessages=analyzedCommits.filter(c=>genericCommit.test(c.message.trim())).length;
-  const genericCommitScore=analyzedCommits.length>=5?clamp(genericMessages/analyzedCommits.length*100):0;
-  const evidenceFor=(name:string)=>{
-    if(name==='Direct attribution')return explicitHits.slice(0,8).map(x=>`${x.path}:${x.number} contains an explicit AI/tool attribution marker.`);
-    if(name==='Repeated cross-file blocks')return duplication.blocks.map(b=>`A 4-line block repeats in ${b.files.join(', ')}: “${b.sample}”`);
-    if(name==='Repeated object schemas')return shapes.repeatedCount?[`${shapes.repeatedCount} repeated object record shape(s) appear in sampled files; data catalogs and hand-written schemas commonly repeat too.`]:[];
-    if(name==='Commit concentration')return largeCommitCount?[`${largeCommitCount} detailed commit(s) added more than 1,000 lines; this is weak context and can reflect imports or migrations.`]:topShare>.65?[`The largest 10% of detailed commits account for ${Math.round(topShare*100)}% of sampled changes; this can have many non-AI causes.`]:[];
-    if(name==='Generic commit messages')return genericMessages?[`${genericMessages} detailed commit message(s) match a generic template such as “update files”.`]:[];
-    return [];
-  };
-  const definitions=[
-    {name:'Direct attribution',weight:.50,score:attributionScore,basis:'Explicit AI/tool-authorship text in sampled file content; absence does not imply human authorship.'},
-    {name:'Repeated cross-file blocks',weight:.15,score:duplication.score,basis:`Exact four-line code blocks repeated across files (${duplication.blocks.length} repeated blocks among ${duplication.totalBlocks} unique blocks); common syntax and generated/vendor files are filtered.`},
-    {name:'Repeated object schemas',weight:.15,score:shapes.score,basis:'Repeated multi-property object shapes in source; ordinary catalog data and hand-written schemas often have this structure, so it is weak evidence.'},
-    {name:'Commit concentration',weight:.12,score:commitConcentration,basis:'Concentration of additions/deletions in the detailed commit sample; imports, migrations and rebases can look the same.'},
-    {name:'Generic commit messages',weight:.08,score:genericCommitScore,basis:'Share of detailed commits using a small, explicit generic-message list; this is a weak signal.'},
-  ];
-  const signals:Signal[]=definitions.map(d=>({name:d.name,score:clamp(d.score),weight:d.weight,contribution:Math.round(clamp(d.score)*d.weight*10)/10,basis:d.basis,evidence:evidenceFor(d.name)}));
-  const score=clamp(signals.reduce((sum,s)=>sum+s.score*s.weight,0));
-  const totalCandidateFiles=Math.max(input.totalCandidateFiles??files.length,files.length);
-  const fileCoverage=totalCandidateFiles?Math.min(1,files.length/totalCandidateFiles):0;
-  const detailedCommitCount=input.detailedCommitCount??analyzedCommits.length;
-  const hasCommitData=input.commits.length>0;
-  const commitCoverage=hasCommitData?Math.min(1,detailedCommitCount/input.commits.length):null;
-  const availableCoverageWeight=.65+(hasCommitData?.35:0);
-  const confidenceScore=clamp(((fileCoverage*.65+(commitCoverage??0)*.35)/availableCoverageWeight)*100);
-  const confidenceReasons=[`${files.length} of ${totalCandidateFiles} eligible source/config files were analyzed.`,hasCommitData?`${detailedCommitCount} of ${input.commits.length} retrieved commits had detailed change statistics.`:'Commit history was unavailable, so the evidence confidence uses file coverage only.'];
-  if(files.length<5)confidenceReasons.push('Few source files were available, so code-pattern signals have limited coverage.');
-  const fileResults=explicitByFile.map(({file,explicit,contentLines})=>{
-    const repeatedBlocks=duplicateCountByFile.get(file.path)??0;
-    const repeatedShapes=shapeFiles.has(file.path)?shapes.repeatedCount:0;
-    const fileSignals=[{name:'Direct attribution',score:explicit.length?90:0},{name:'Repeated cross-file blocks',score:clamp(repeatedBlocks*20)},{name:'Repeated object schemas',score:repeatedShapes?clamp(repeatedShapes*10):0}];
-    const evidence=explicit.map(x=>`Line ${x.number}: explicit AI/tool attribution marker.`);
-    if(repeatedBlocks)evidence.push(`${repeatedBlocks} repeated four-line block(s) also appear in another sampled file.`);
-    if(repeatedShapes)evidence.push('File participates in a repeated multi-property object shape; this is common in ordinary data catalogs too.');
-    if(!explicit.length)evidence.push('No explicit attribution marker found in this file; this is not evidence of human authorship.');
-    return {path:file.path,lines:contentLines,score:clamp((explicit.length?90:0)*.7+Math.min(repeatedBlocks*20,100)*.15+Math.min(repeatedShapes*10,100)*.15),signals:fileSignals,evidence};
-  });
-  const evidence=signals.flatMap(s=>s.evidence).slice(0,16);
-  if(!explicitHits.length)evidence.unshift('No explicit AI/tool attribution marker was found in the analyzed files. Absence of a marker does not establish human authorship.');
-  if(!evidence.length)evidence.push('The sampled weak signals did not provide meaningful evidence either way.');
-  const limitations=[
-    'AI Generation Confidence is a heuristic estimate from repository artifacts, never proof of who authored source code.',
-    'Coding agents often leave no attribution markers; human-written templates, repeated conventions, generated code, migrations, and bulk imports can produce similar patterns.',
-    'Results depend on the sampled files and available commit metadata. Missing data lowers confidence; it is not treated as evidence for or against AI use.',
-  ];
-  return {score,confidenceLevel:scoreBand(score),confidence:{score:confidenceScore,level:confidenceBand(confidenceScore),reasons:confidenceReasons},signals,evidence,limitations,fileResults,coverage:{analyzedFiles:files.length,totalCandidateFiles,detailedCommits:detailedCommitCount,totalCommits:input.commits.length}};
+ const files=input.files.filter(f=>f.content.trim()&&isOrdinarySource(f));
+ const attributionHits=files.flatMap(file=>file.content.replace(/\r/g,'').split('\n').flatMap((line,index)=>attributionComment.test(line)&&attribution.test(line)?[{path:file.path,line:index+1}]:[]));
+ const attributionScore=attributionHits.length?clamp(78+Math.min(22,(new Set(attributionHits.map(hit=>hit.path)).size-1)*7)):0;
+ const duplicate=duplicateBlocks(files);const shapes=objectShapes(files);
+ const detailed=input.commits.filter(commit=>commit.additions!==null&&commit.additions!==undefined);
+ const changes=detailed.map(commit=>Math.max(0,commit.additions??0)+Math.max(0,commit.deletions??0));const totalChanges=changes.reduce((a,b)=>a+b,0);const sorted=[...changes].sort((a,b)=>b-a);const topShare=totalChanges?sorted.slice(0,Math.max(1,Math.ceil(sorted.length*.1))).reduce((a,b)=>a+b,0)/totalChanges:0;
+ const largeCommits=detailed.filter(commit=>(commit.additions??0)>1000).length;
+ const commitConcentration=detailed.length>=3?clamp(Math.max(0,(topShare-.4)*100)*.45+Math.min(largeCommits,2)*7):0;
+ const genericMessages=input.commits.filter(commit=>genericCommit.test(commit.message.trim())).length;const genericMessageScore=input.commits.length>=5?clamp(genericMessages/input.commits.length*100):0;
+ const sourceAvailable=files.length>0;const historyStatus=input.historyStatus??(input.commits.length?'available':'not_applicable');
+ const definitions=[
+  {name:'Explicit tool attribution',weight:.40,score:attributionScore,available:sourceAvailable,basis:'Recognized AI/tool attribution in a source comment. It may have been copied or refer to generated sections rather than the whole project.',evidence:attributionHits.slice(0,10).map(hit=>`${hit.path}:${hit.line} contains an explicit AI/tool attribution marker.`)},
+  {name:'Repeated cross-file code blocks',weight:.15,score:duplicate.score,available:sourceAvailable,basis:`Exact repeated four-line blocks, after filtering short syntax and comments (${duplicate.evidence.length} examples among ${duplicate.total} unique blocks). Common helper patterns and templates can produce the same result.`,evidence:duplicate.evidence.map(hit=>`${hit.files.join(', ')}: repeated block begins near line ${hit.line}: "${hit.sample}"`)},
+  {name:'Repeated object shapes',weight:.10,score:shapes.score,available:sourceAvailable,basis:'Repeated objects with at least four matching property names. Catalog data and hand-written schemas often repeat this structure.',evidence:shapes.evidence.slice(0,10).map(hit=>`${hit.file}:${hit.line} participates in a repeated object shape.`)},
+  {name:'Commit change concentration',weight:.20,score:commitConcentration,available:detailed.length>=3,basis:'Share of detailed additions/deletions concentrated in the largest 10% of commits. Imports, migrations, rebases, and bulk edits have the same pattern.',evidence:largeCommits?[`${largeCommits} detailed commit(s) added over 1,000 lines; size alone is not an authorship indicator.`]:topShare>.65?[`The largest 10% of detailed commits contain ${Math.round(topShare*100)}% of observed line changes.`]:[]},
+  {name:'Generic commit messages',weight:.15,score:genericMessageScore,available:input.commits.length>=5,basis:'Share of retrieved messages matching a small explicit generic-message list. This is weak context and commit messages may be incomplete.',evidence:genericMessages?[`${genericMessages} of ${input.commits.length} retrieved commits match the generic-message list.`]:[]},
+ ];
+ const active=definitions.filter(signal=>signal.available);const availableWeight=active.reduce((sum,signal)=>sum+signal.weight,0);const signals:Signal[]=definitions.map(signal=>({...signal,contribution:signal.available&&availableWeight?Math.round(signal.score*signal.weight/availableWeight*10)/10:0}));
+ const score=availableWeight?clamp(active.reduce((sum,signal)=>sum+signal.score*signal.weight,0)/availableWeight):0;
+ const totalCandidateFiles=Math.max(input.totalCandidateFiles??files.length,files.length);const discoveredFiles=Math.max(input.discoveredFiles??totalCandidateFiles,totalCandidateFiles);const fileCoverage=(totalCandidateFiles?Math.min(1,files.length/totalCandidateFiles):0)*(input.discoveryComplete===false?.75:1);
+ const detailedCommitCount=input.detailedCommitCount??detailed.length;const hasHistory=historyStatus==='available';const hasGitHubHistory=historyStatus!=='not_applicable';const commitCoverage=input.commits.length?Math.min(1,detailedCommitCount/input.commits.length):hasHistory?1:null;
+ const confidenceParts=[{score:fileCoverage,weight:.65}];if(hasGitHubHistory)confidenceParts.push({score:hasHistory?(commitCoverage??0):0,weight:.35});const confidenceScore=clamp(confidenceParts.reduce((sum,part)=>sum+part.score*part.weight,0)/confidenceParts.reduce((sum,part)=>sum+part.weight,0)*100);
+ const confidenceReasons=[`${files.length} of ${totalCandidateFiles} eligible source/config files were readable and analyzed.`,historyStatus==='not_applicable'?'Commit-history signals are not applicable to this input.':hasHistory?`${detailedCommitCount} of ${input.commits.length} retrieved commits had detailed change statistics.`:'GitHub commit history could not be retrieved; it was excluded from the signal estimate.'];if(input.discoveryComplete===false)confidenceReasons.push('The repository tree was truncated, so the discovered-file inventory is incomplete.');
+ if(files.length<5)confidenceReasons.push('Few source files were available; source-pattern evidence is limited.');
+ const skippedInput=[...(input.skippedFiles??[]),...input.files.filter(file=>readmeName.test(file.path.split('/').at(-1)??'')||generatedName.test(file.path)).map(file=>({path:file.path,reason:readmeName.test(file.path.split('/').at(-1)??'')?'README is context only and excluded from ordinary source-code signals':'Generated or minified file excluded from source-code signals'}))];const uniqueSkipped:AISkippedFile[]=[...new Map(skippedInput.map(file=>[file.path,file])).values()];
+ const skipped=uniqueSkipped.map(file=>({path:file.path,status:file.status??'skipped',lines:0,score:0,signals:[],evidence:[file.reason],limitations:['File content was not included in source-signal analysis.']}));
+ const fileResults=[...files.map(file=>{const attributed=attributionHits.filter(hit=>hit.path===file.path);const repeated=duplicate.evidence.filter(hit=>hit.files.includes(file.path));const shaped=shapes.evidence.filter(hit=>hit.file===file.path);const evidence=[...attributed.map(hit=>`Line ${hit.line}: explicit AI/tool attribution marker.`),...repeated.map(hit=>`Line ${hit.line}: a four-line block is repeated in ${hit.files.filter(name=>name!==file.path).join(', ')}.`),...shaped.map(hit=>`Line ${hit.line}: file participates in a repeated object shape.`)];if(!attributed.length&&!repeated.length&&!shaped.length)evidence.push('No supported AI-generation signal was detected in this file; this does not establish human authorship.');const lines=file.content.split(/\r?\n/).filter(line=>line.trim()).length;return {path:file.path,status:'analyzed' as const,lines,score:clamp((attributed.length?85:0)+Math.min(15,repeated.length*5)+Math.min(10,shaped.length*3)),signals:[{name:'Explicit tool attribution',score:attributed.length?100:0},{name:'Repeated cross-file code blocks',score:clamp(repeated.length*20)},{name:'Repeated object shapes',score:clamp(shaped.length*10)}],evidence,limitations:['File-level scores summarize observed signals and are not probabilities or authorship conclusions.']};}),...skipped];
+ const evidence=signals.flatMap(signal=>signal.evidence).slice(0,20);if(!attributionHits.length)evidence.unshift('No explicit AI/tool attribution marker was found in analyzed source comments. Absence does not establish human authorship.');if(!evidence.length)evidence.push('No supported positive signals were found in the available evidence.');
+ const inspectedLines=files.reduce((sum,file)=>sum+file.content.split(/\r?\n/).filter(line=>line.trim()).length,0);const enoughEvidence=attributionHits.length>0||files.length>=3&&inspectedLines>=80||detailed.length>=3;
+ const limitations=['This observed-signal estimate is not a statistically calibrated probability and cannot prove who authored code.','Framework scaffolds, templates, conventions, generated code, migrations, and bulk imports can produce similar signals.','Only files and commit metadata shown in the coverage report were used. README, lockfiles, generated/minified files, and inaccessible files are not ordinary source evidence.'];
+ const sufficiency={status:enoughEvidence?'sufficient':'insufficient',reason:enoughEvidence?'The available source or history contains enough material to describe observed signals, but not to prove authorship.':'Too little readable source or detailed history was available for a meaningful repository-wide estimate.'};
+ return {score,estimate:{score,label:sufficiency.status==='insufficient'?'Insufficient evidence':`${band(score)} observed AI-generation signals`,meaning:'A deterministic heuristic summary of observable repository signals; not a probability of AI authorship.'},confidenceLevel:band(score),confidence:{score:confidenceScore,level:confidenceBand(confidenceScore),label:'Evidence confidence',reasons:confidenceReasons},sufficiency,signals,evidence,limitations,fileResults,coverage:{filesDiscovered:discoveredFiles,analyzedFiles:files.length,totalCandidateFiles,skippedFiles:uniqueSkipped.length,inaccessibleFiles:uniqueSkipped.filter(file=>file.status==='inaccessible').length,detailedCommits:detailedCommitCount,totalCommits:input.commits.length,historyStatus}};
 }
