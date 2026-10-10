@@ -69,17 +69,17 @@ export async function analyzeRepository(owner:string,repo:string,progress:(event
 }
 function monthCounts(commits:{date:string}[]){const map=new Map<string,number>();commits.forEach(c=>{const m=c.date.slice(0,7);map.set(m,(map.get(m)??0)+1)});return [...map].map(([month,count])=>({month,count})).reverse();}
 
-/** Convert raw Node.js errors into user-friendly messages. Never expose internals like "Invalid IP address: undefined". */
+/** Convert raw Node.js errors into user-friendly messages. */
 function friendlyWebsiteError(e:unknown):string{
- if(!(e instanceof Error))return 'Website could not be analyzed.';
- if(e.name==='AbortError'||/timed?\s*out/i.test(e.message))return 'Website request timed out.';
- if(/ENOTFOUND|ESERVFAIL|EAI_AGAIN/i.test(e.message))return 'Website hostname could not be resolved. Check that the URL is correct.';
- if(/ECONNREFUSED/i.test(e.message))return 'Website refused the connection.';
- if(/ECONNRESET|socket hang up/i.test(e.message))return 'Connection to the website was reset unexpectedly.';
- if(/certificate|SSL|TLS/i.test(e.message))return 'Website TLS/SSL certificate could not be verified.';
+ if(!(e instanceof Error))return 'Website could not be accessed.';
+ if(e.name==='AbortError'||/timed?\s*out/i.test(e.message))return 'Connection timed out.';
+ if(/ENOTFOUND|ESERVFAIL|EAI_AGAIN|hostname could not/i.test(e.message))return 'Hostname could not be resolved. Ensure the domain name is valid.';
+ if(/ECONNREFUSED/i.test(e.message))return 'Connection refused by the server.';
+ if(/ECONNRESET|socket hang up/i.test(e.message))return 'Connection reset unexpectedly.';
+ if(/certificate|SSL|TLS|CERT_/i.test(e.message))return 'SSL/TLS certificate verification failed.';
  if(/public host|HTTP or HTTPS|standard web port|valid\. Provide/i.test(e.message))return e.message;
- if(/redirect|response exceeds|returned HTTP|unsupported content|no addresses|invalid address|hostname could not|refused|reset/i.test(e.message))return e.message;
- return 'Website could not be analyzed. Ensure the URL is publicly accessible.';
+ if(/redirect|response exceeds|returned HTTP|unsupported content|no addresses|invalid address/i.test(e.message))return e.message;
+ return e.message||'Ensure the URL is publicly accessible.';
 }
 
 /**
@@ -131,9 +131,8 @@ export function normalizeAddress(ip:string):string{
 async function analyzeWebsite(input:string){
  const u=validateWebsiteUrl(input);
  const addresses=await resolvePublicAddresses(u.hostname);
- const pinned=addresses[0];
  const transport=u.protocol==='https:'?https:http;
- const html=await fetchWebsiteHtml(u,transport,pinned,0);
+ const html=await fetchWebsiteHtml(u,transport,addresses,0);
  const title=html.match(/<title[^>]*>(.*?)<\/title>/is)?.[1]?.trim()??null;
  const description=html.match(/<meta\s+name=["']description["']\s+content=["']([^"']*)/i)?.[1]??null;
  const tech:string[]=[];
@@ -152,22 +151,31 @@ async function analyzeWebsite(input:string){
 function fetchWebsiteHtml(
  u:URL,
  transport:typeof http|typeof https,
- pinned:{address:string;family:4|6},
+ addresses:{address:string;family:4|6}[],
  redirectDepth:number
 ):Promise<string>{
+ const primary=addresses[0];
  return new Promise<string>((resolve,reject)=>{
   const req=transport.request(u,{
    method:'GET',
-   headers:{'User-Agent':'RepoScope/1.0','Accept':'text/html,application/xhtml+xml'},
+   headers:{
+    'User-Agent':'RepoScope/1.0 (Public Repository & Website Intelligence Analyzer)',
+    'Accept':'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language':'en-US,en;q=0.9',
+   },
    agent:false,
-   lookup:(_hostname,_options,callback)=>{
-    // Guard: ensure the address is a non-empty string before passing to Node internals.
-    // An undefined address here would produce "Invalid IP address: undefined" from Node.js.
-    if(typeof pinned?.address!=='string'||!pinned.address){
-     callback(new Error('Internal: pinned address is not available.') as NodeJS.ErrnoException,'',-1 as unknown as 4|6);
+   lookup:(_hostname,options,callback)=>{
+    const cb=((typeof options==='function'?options:callback)??callback) as (err:Error|null,addressOrAddresses?:unknown,family?:number)=>void;
+    const opts=typeof options==='object'&&options!==null?options:{};
+    if(!primary?.address||typeof primary.address!=='string'){
+     cb(new Error('Internal: pinned address is not available.'));
      return;
     }
-    callback(null,pinned.address,pinned.family);
+    if(opts.all){
+     cb(null,addresses.map(a=>({address:a.address,family:a.family})));
+    }else{
+     cb(null,primary.address,primary.family);
+    }
    },
    ...(u.protocol==='https:'?{servername:u.hostname}:{}),
   },res=>{
@@ -183,7 +191,7 @@ function fetchWebsiteHtml(
     try{validatedRedirect=validateWebsiteUrl(redirectUrl.href);}catch(e){reject(e instanceof Error?e:new Error('Website redirect destination failed validation.'));return;}
     const redirectTransport=validatedRedirect.protocol==='https:'?https:http;
     resolvePublicAddresses(validatedRedirect.hostname)
-     .then(addrs=>fetchWebsiteHtml(validatedRedirect,redirectTransport,addrs[0],redirectDepth+1))
+     .then(addrs=>fetchWebsiteHtml(validatedRedirect,redirectTransport,addrs,redirectDepth+1))
      .then(resolve,reject);
     return;
    }
@@ -203,9 +211,8 @@ function fetchWebsiteHtml(
   });
   req.setTimeout(8000,()=>{req.destroy(Object.assign(new Error('Website request timed out.'),{name:'AbortError'}));});
   req.on('error',(err)=>{
-   // Map raw Node.js TCP errors to user-friendly messages.
    if(/Invalid IP address|EINVAL/i.test(err.message)||(err as NodeJS.ErrnoException).code==='EINVAL'){
-    reject(new Error('Website could not be analyzed: network address validation failed. Ensure the URL points to a publicly reachable host.'));
+    reject(new Error('Website network address validation failed. Ensure the URL points to a publicly reachable host.'));
    }else{
     reject(err);
    }
