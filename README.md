@@ -1,161 +1,417 @@
-﻿# RepoScope
+# ⚡ RepoScope
 
-RepoScope is a full-stack repository intelligence application. It retrieves public GitHub data through the official REST API, samples repository source and configuration files, and presents maintainable, evidence-based analysis in a responsive dashboard.
+<p align="center">
+  <strong>See the structure behind the code.</strong><br/>
+  A repository intelligence workspace for exploring project architecture, development history, dependencies, and explainable code signals.
+</p>
 
-## Features
+<p align="center">
+  <a href="https://github.com/amitpaul2004/MASTER_WEB"><img alt="GitHub repository" src="https://img.shields.io/badge/GitHub-MASTER__WEB-181717?logo=github" /></a>
+  <img alt="React" src="https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black" />
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white" />
+  <img alt="Vite" src="https://img.shields.io/badge/Vite-6-646CFF?logo=vite&logoColor=white" />
+  <img alt="Node.js" src="https://img.shields.io/badge/Node.js-20%2B-339933?logo=nodedotjs&logoColor=white" />
+  <img alt="License" src="https://img.shields.io/badge/License-See%20repository-lightgrey" />
+</p>
 
-- Repository metadata, topics, language byte totals, recursive tree, and default-branch commit history
-- Source and configuration file sampling with line estimates and file explorer
-- Commit classification, contributor counts, and monthly activity
-- Technology fingerprints from manifests and configuration
-- Deterministic AI Generation Confidence estimates with signal breakdown, evidence, and limitations
-- Optional safe public website inspection and technology overlap comparison
-- Internal Project Health Heuristic
-- JSON report export
-- Disk-backed ZIP upload analysis with no extraction or code execution
-- Typed NDJSON progress events and separate source, evidence-confidence, and repository-coverage metrics
-- Five-minute in-memory GitHub caching and configurable, balanced file sampling
-- Static architecture links, pattern-based security and maintainability findings, manifest dependencies, and file risk indicators
-- Optional report-grounded repository Q&A when a server-side chat provider is configured
-- Local-browser saved report identifiers and HTML/print exports
+---
 
-## Architecture
+## ✨ What can RepoScope do?
 
-```text
-React + TypeScript + Vite
-  â†’ Express API (typed NDJSON analysis progress)
-    â†’ Repository analyzer
-      â†’ GitHub REST service adapters (repository, tree, languages, commits)
-      â†’ deterministic analyzers (AI signals, health, technology)
-      â†’ optional public website inspector
+RepoScope turns a public GitHub repository or a ZIP archive into a structured, evidence-led project report.
+
+- **🔎 Analyze GitHub repositories** — retrieve repository metadata, topics, default-branch files, language totals, and commit history.
+- **📦 Analyze ZIP archives** — inspect a project's source/configuration files without extracting the entire archive or executing uploaded code.
+- **🧭 Explore project structure** — browse files, inspect sampled source coverage, and view architecture relationships inferred from available evidence.
+- **🧰 Detect technologies** — identify likely languages, frameworks, tools, manifests, and configuration fingerprints.
+- **🕒 Understand development activity** — summarize contributors, commits, monthly activity, and selected commit-change details.
+- **🧠 Review explainable code signals** — see observed patterns behind a deterministic AI-generation estimate, with evidence and limitations.
+- **💚 Inspect project health** — review an internal heuristic based on project structure, tests, CI, README presence, and available history.
+- **🛡️ Surface code risks** — inspect pattern-based security and maintainability findings, file risk indicators, dependencies, and optional vulnerability lookups.
+- **🔗 Inspect a public website** — optionally check a public HTTP(S) website for basic metadata and technology fingerprints.
+- **⚖️ Compare reports** — compare analyzed projects, file inventories, dependency information, and supported source diffs.
+- **📄 Export results** — export JSON reports and use HTML/print-friendly report views.
+- **💬 Ask questions about a report** — enable optional report-grounded Q&A by configuring a server-side, OpenAI-compatible chat endpoint.
+- **📈 Track analysis progress** — receive typed NDJSON progress events and separate coverage, source-signal, and evidence-confidence information.
+- **💾 Reopen reports** — use saved report identifiers in the browser; optional server-side JSON persistence is available.
+- **🎨 Use a responsive workspace** — explore the dashboard on desktop and smaller screens, with motion-aware UI behavior.
+
+> **Interpretation note:** AI-generation and project-health scores are heuristics, not proof, calibrated probabilities, certifications, or substitutes for a professional review. Findings depend on the evidence available to the analyzer.
+
+## 🖥️ System architecture
+
+The application is split into a React client and an Express API. Repository access, archive processing, and analysis run on the server; the browser receives normalized report data.
+
+```mermaid
+flowchart TB
+    U["Developer"] --> UI["React + TypeScript UI<br/>Vite"]
+    UI -->|"REST requests / NDJSON progress"| API["Express + TypeScript API"]
+    API --> GH["GitHub service adapters"]
+    GH --> GHAPI["GitHub REST API"]
+    API --> ZIP["ZIP upload pipeline<br/>Multer + Yauzl"]
+    API --> ANALYZER["Repository analyzer"]
+    GH --> ANALYZER
+    ZIP --> ANALYZER
+    ANALYZER --> TECH["Technology & manifest detection"]
+    ANALYZER --> ARCH["Architecture & code intelligence"]
+    ANALYZER --> SIGNALS["AI-generation and project-health heuristics"]
+    ANALYZER --> RISK["Security, quality & dependency signals"]
+    ANALYZER --> WEB["Optional public website inspector"]
+    ANALYZER --> REPORT["Normalized RepoReport"]
+    REPORT --> CACHE["In-memory report cache"]
+    REPORT -. optional .-> STORE["JSON report store<br/>REPORT_STORE_PATH"]
+    CACHE --> API
+    STORE --> API
+    API --> UI
 ```
 
-The browser receives normalized internal report objects, not GitHub API responses. GitHub access and `GITHUB_TOKEN` remain server-side. The analyzer boundary allows future implementations without a frontend dependency on a specific provider.
+### Request lifecycle
 
-## Requirements and setup
+1. The user submits a public GitHub repository URL or a ZIP archive.
+2. The API validates the input and emits progress events.
+3. For GitHub input, server-side adapters retrieve metadata, the repository tree, language totals, and bounded commit history. For ZIP input, the upload is streamed to a temporary file and only a bounded source sample is read.
+4. Analyzers inspect the available files and metadata to create technology, architecture, risk, activity, and heuristic signals.
+5. The API returns a normalized report that the frontend renders in the workspace.
+6. Reports are cached in process memory; optional JSON persistence can be enabled with `REPORT_STORE_PATH`.
 
-- Node.js 20 or newer
-- npm
+### Design principles
 
-```sh
+- **Server-side secrets:** GitHub and chat credentials belong in server environment variables, never in frontend code.
+- **Bounded analysis:** file counts, file sizes, upload sizes, and sampled archive content have configurable limits.
+- **Evidence over certainty:** inaccessible, skipped, or missing evidence is represented as a limitation instead of being silently treated as proof of absence.
+- **No uploaded-code execution:** ZIP contents are inspected as data; RepoScope does not run the uploaded project.
+- **Provider boundaries:** the UI consumes normalized report objects rather than depending directly on GitHub API response shapes.
+
+## 🧩 Logical ER diagram
+
+RepoScope does **not** currently require a relational database. Recent reports are stored in memory by default, and optional persistence writes report JSON files to a configured directory. The diagram below is a **conceptual data model** showing the main report objects and their relationships; it is not a diagram of existing SQL tables.
+
+```mermaid
+erDiagram
+    REPOSITORY ||--o{ ANALYSIS_RUN : has
+    ANALYSIS_RUN ||--|| ANALYSIS_REPORT : produces
+    ANALYSIS_REPORT ||--o{ ANALYZED_FILE : describes
+    ANALYSIS_REPORT ||--o{ COMMIT_RECORD : summarizes
+    ANALYSIS_REPORT ||--o{ FINDING : contains
+    ANALYSIS_REPORT ||--o{ DEPENDENCY : detects
+    ANALYSIS_REPORT ||--o{ TECHNOLOGY : identifies
+    ANALYSIS_RUN ||--o| WEBSITE_INSPECTION : may_include
+
+    REPOSITORY {
+        string owner
+        string name
+        string url
+        string default_branch
+        string visibility
+    }
+    ANALYSIS_RUN {
+        string id
+        string source_mode
+        string status
+        datetime created_at
+    }
+    ANALYSIS_REPORT {
+        string id
+        number source_coverage
+        number evidence_confidence
+        string generated_at
+    }
+    ANALYZED_FILE {
+        string path
+        string file_type
+        number size_bytes
+        string analysis_status
+        string skip_reason
+    }
+    COMMIT_RECORD {
+        string sha
+        string author
+        datetime committed_at
+        number additions
+        number deletions
+    }
+    FINDING {
+        string id
+        string category
+        string severity
+        string title
+        string recommendation
+    }
+    DEPENDENCY {
+        string name
+        string version
+        string kind
+        string manifest
+    }
+    TECHNOLOGY {
+        string name
+        string detection_source
+        number confidence
+    }
+    WEBSITE_INSPECTION {
+        string url
+        string status
+        string detected_signals
+    }
+```
+
+**Relationship notes**
+- A repository can have multiple analysis runs; a ZIP analysis may have no GitHub repository identity or commit history.
+- Each completed run produces a report containing file coverage, findings, detected dependencies/technologies, and available commit summaries.
+- A website inspection is optional and is associated with a run only when a website URL is provided.
+- The current implementation's report schema and persistence behavior are authoritative; this conceptual model is intended to help contributors understand the domain.
+
+## 🧰 Technology stack
+
+| Area | Technologies | Purpose |
+| --- | --- | --- |
+| Frontend | React 18, TypeScript, Vite | Responsive single-page application and development/build tooling |
+| UI and icons | CSS, Lucide React | Workspace styling, interaction, and icons |
+| Routing | React Router | Client-side navigation |
+| Backend | Node.js, Express 4, TypeScript | REST API, analysis orchestration, streaming progress |
+| GitHub integration | GitHub REST API, server-side service adapters | Repository metadata, trees, languages, commits, and source retrieval |
+| ZIP handling | Multer, Yauzl | Disk-backed uploads and streaming archive inspection |
+| Configuration | dotenv, environment variables | Local and deployment configuration |
+| Dependency/security signals | Manifest parsing and optional OSV API lookup | Dependency context and vulnerability-related signals |
+| Testing | Vitest, Supertest | Unit and API integration tests |
+| Build | TypeScript compiler, Vite | Type-checking, client bundle, and compiled server output |
+
+## 🚀 Run RepoScope locally
+
+### Requirements
+
+- **Node.js 20 or newer**
+- **npm**
+- Git (recommended)
+- A GitHub account/token is optional for public repositories; a token helps with API rate limits.
+
+### 1. Fork the repository
+
+Open [amitpaul2004/MASTER_WEB](https://github.com/amitpaul2004/MASTER_WEB) and click **Fork**. Choose your GitHub account as the destination.
+
+### 2. Clone your fork
+
+Replace `YOUR_GITHUB_USERNAME` with your GitHub username:
+
+```bash
+git clone https://github.com/YOUR_GITHUB_USERNAME/MASTER_WEB.git
+cd MASTER_WEB
+```
+
+If you cloned the original repository directly, use:
+
+```bash
+git clone https://github.com/amitpaul2004/MASTER_WEB.git
+cd MASTER_WEB
+```
+
+### 3. Install dependencies
+
+Run this from the repository root (the folder containing `package.json`):
+
+```bash
 npm install
+```
+
+### 4. Create your local environment file
+
+macOS / Linux / Git Bash:
+
+```bash
 cp .env.example .env
+```
+
+Windows PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Edit `.env` if you need to change settings. Leave optional values blank if you do not use those integrations. **Never commit your real `.env` file or put secrets in variables prefixed with `VITE_`.**
+
+### 5. Start the frontend and backend
+
+```bash
 npm run dev
 ```
 
-The web app runs at `http://localhost:5173`; the API runs at `http://localhost:5000`.
+By default:
+- Frontend: [http://localhost:5173](http://localhost:5173)
+- API: [http://localhost:5000](http://localhost:5000)
+- Health check: [http://localhost:5000/api/health](http://localhost:5000/api/health)
 
-### Environment
+The Vite development server proxies `/api` requests to `http://localhost:5000`.
 
-| Variable | Purpose |
-| --- | --- |
-| `GITHUB_TOKEN` | Optional server-side GitHub token. Public repositories work without it, subject to GitHub's unauthenticated rate limits. |
-| `PORT` | API port (default `5000`). |
-| `CLIENT_ORIGIN` | Allowed browser origin for CORS (default `http://localhost:5173`). |
-| `ANALYSIS_MAX_FILES` | Source/config files sampled per analysis (default `25`, hard cap `500`). |
-| `ANALYSIS_MAX_FILE_BYTES` | Maximum bytes read per source file (default `250000`, hard cap `2000000`). |
-| `ZIP_MAX_UPLOAD_BYTES` | Maximum uploaded ZIP size (default and hard cap `3221225472` bytes / 3 GiB). |
-| `ZIP_MAX_ANALYSIS_BYTES` | Maximum decompressed source/config bytes retained for one analysis sample (default `67108864`, hard cap `134217728`). This is a resource budget for sampled analysis, not an archive rejection limit; entries outside the budget are reported as skipped. |
-| `ZIP_MAX_COMPRESSION_RATIO` | Maximum allowed expansion ratio for large archive entries (default `200`, hard cap `1000`). |
-| `CHAT_COMPLETIONS_URL` | Optional OpenAI-compatible chat completions endpoint. |
-| `CHAT_API_KEY` | Optional server-only chat provider credential. |
-| `CHAT_MODEL` | Optional configured model identifier. |
-| `REPORT_STORE_PATH` | Optional server-side directory for durable report JSON (retain only on a protected disk volume). |
-| `OSV_API_URL` | HTTPS endpoint for optional OSV vulnerability lookups (defaults to the OSV query API). |
+### 6. Verify the project
 
-Use a fine-grained token with read access to public repositories. Never put this value in a `VITE_` variable or browser code. Copy `.env.example` to `.env` and keep `.env` untracked.
+Run tests:
 
-## Commands
-
-```sh
-npm run dev       # Vite and API in watch mode
-npm run build     # Type-check client, build client and compile server
-npm start         # Start compiled API
-npm test          # Run analyzer, API integration, and UI accessibility-contract tests
+```bash
+npm test
 ```
 
-For production, serve the Vite `dist/` output with a static host and run the compiled API behind the same origin or configure the frontend proxy at the deployment edge. Set `CLIENT_ORIGIN` to the exact trusted origin. Optional chat requires an OpenAI-compatible endpoint, model, and API key configured only in the server environment. The assistant receives report metadata and findings, not retained source text.
+Create a production build:
 
-## API
+```bash
+npm run build
+```
+
+Start the compiled API after building:
+
+```bash
+npm start
+```
+
+## ⚙️ Environment variables
+
+Copy `.env.example` to `.env` and configure only what you need.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `PORT` | `5000` | Port used by the Express API. |
+| `CLIENT_ORIGIN` | `http://localhost:5173` | Exact trusted frontend origin allowed by CORS. In production, set this to your deployed frontend URL (scheme and hostname, no trailing slash). |
+| `GITHUB_TOKEN` | Empty | Optional server-side GitHub token. Public repositories can be analyzed without one, subject to unauthenticated rate limits. |
+| `ANALYSIS_MAX_FILES` | `25` | Maximum number of source/configuration files sampled; hard cap 500. |
+| `ANALYSIS_MAX_FILE_BYTES` | `250000` | Maximum size of an individual source file read; hard cap 2,000,000 bytes. |
+| `ZIP_MAX_UPLOAD_BYTES` | `3221225472` | Compressed ZIP upload limit (3 GiB by default; hard cap 3 GiB). |
+| `ZIP_MAX_ANALYSIS_BYTES` | `67108864` | Decompressed source content budget for one ZIP analysis (64 MiB default; hard cap 128 MiB). |
+| `ZIP_MAX_COMPRESSION_RATIO` | `200` | Safety threshold for suspicious compression ratios; hard cap 1000. |
+| `CHAT_COMPLETIONS_URL` | Empty | Optional OpenAI-compatible chat-completions endpoint. |
+| `CHAT_API_KEY` | Empty | Optional server-only credential for the chat provider. |
+| `CHAT_MODEL` | Empty | Model identifier used by the optional chat provider. |
+| `REPORT_STORE_PATH` | Empty | Optional directory for persisted report JSON. Use a protected, durable disk if persistence across restarts is required. |
+| `OSV_API_URL` | `https://api.osv.dev/v1/query` | Endpoint for optional OSV vulnerability lookups. |
+
+Use a narrowly scoped GitHub token and keep it on the server. Never expose `GITHUB_TOKEN` or `CHAT_API_KEY` to the browser.
+
+## 🔌 API reference
 
 ### `GET /api/health`
 
-Returns `{ "status": "ok" }`.
+Returns API status and current ZIP analysis limits.
 
 ### `POST /api/analyze`
 
-Request JSON:
+Analyze a public GitHub repository. Send JSON:
 
 ```json
 {
-  "repositoryUrl": "https://github.com/amitpaul2004/MASTER_WEBowner/repository",
+  "repositoryUrl": "https://github.com/OWNER/REPOSITORY",
   "websiteUrl": "https://example.com"
 }
 ```
 
-`websiteUrl` is optional. The response is newline-delimited JSON with typed progress events, then one `type: result` record with an analysis id and normalized report, or a safe `type: error` record. The UI consumes the stream without reloading. Progress includes actual stage status and observed file/commit counts.
-
-### `GET /api/analysis/:id`
-
-Returns a recent in-memory report. Reports are process-local and are evicted after the cache exceeds 50 entries or when the process restarts.
+- `repositoryUrl` is required.
+- `websiteUrl` is optional and is intended for a public website.
+- The response uses newline-delimited JSON (NDJSON): progress records followed by a result record, or a safe error record.
 
 ### `POST /api/analyze/zip`
 
-Multipart form-data with one `archive` field containing a `.zip` file, up to 3 GiB compressed. Multer writes the incoming upload to a temporary file. Yauzl first enumerates archive metadata without decompressing bodies, then streams only the configured source sample into a bounded analysis budget. The complete archive and every source body are never buffered together or extracted. The endpoint validates archive paths and symlinks, applies per-file, suspicious-ratio, and sampled-analysis byte safeguards, and never runs uploaded code. There is no fixed entry-count rejection. Entries remain metadata in the report, so manifest memory still grows with entry count; extraordinarily large manifests can exhaust server memory. Resource-budget exclusions appear in per-file coverage instead of rejecting based on entry count or declared expanded size.
+Analyze a ZIP archive using `multipart/form-data` with a single file field named `archive`. The configured default compressed upload limit is 3 GiB. Uploaded code is not executed.
 
-## Analysis limits and methodology
+### `GET /api/analysis/:id`
 
-- GitHub repository trees use the recursive Git Trees API. GitHub may mark a large tree as truncated; that state is surfaced in the dashboard.
-- Up to 500 default-branch commits are retrieved. Detailed additions/deletions/files changed are requested for the latest 20 commits to bound API usage; unavailable details are shown as unavailable.
-- `ANALYSIS_MAX_FILES` source/configuration files are sampled using configuration prioritization and round-robin source-folder sampling. Per-file byte limits are also configurable. `analysisFiles` records analyzed, skipped, and inaccessible paths with reasons. README files provide context but are excluded from ordinary source signals. Lockfiles, generated/minified files, vendored/dependency folders, build output, unsupported formats, binary content, and oversized files are excluded and reported.
-- GitHub trees can be truncated. In that case repository discovery coverage is marked incomplete and evidence confidence is reduced. GitHub content-fetch failures remain visible as inaccessible rather than becoming empty source. Commit history is bounded to the latest 500 commits and detailed additions/deletions are fetched for the latest 20; the report discloses the retrieved and detailed counts.
-- ZIP uploads accept up to 3 GiB compressed by default and have no entry-count cap. The server streams uploads to `os.tmpdir()/reposcope-uploads` and removes each temporary archive after success or failure. This repository has no deployment-provider or reverse-proxy configuration, so the production 3 GiB path has not been verified. The proxy must allow request bodies of at least 3 GiB and suitable request/response timeouts; many serverless/static hosts impose lower hard limits. For nginx, configure `client_max_body_size 3g` and a long `client_body_timeout`. Configure temporary disk capacity and quotas for concurrent uploads.
-- Language shares use GitHub's language API byte totals.
-- Technology detection is based on observed manifests/configuration and limited source fingerprints; absence means unable to determine.
-- Website checks use public HTTP(S) GET requests, reject credentials/local hostnames, disable redirects, apply a timeout, and inspect at most the first 1 MB of HTML. The site can still be unreachable or block automated clients.
+Retrieve a report by its analysis identifier. Without `REPORT_STORE_PATH`, reports are held in process memory and may disappear when the server restarts or the cache evicts older entries.
 
-### AI-generation estimate and evidence confidence
+### `POST /api/compare`
 
-The observed signal score combines available evidence using normalized weights: explicit AI/tool attribution in a source comment (40%), exact repeated four-line blocks across files (15%), repeated multi-property object shapes (10%), commit-change concentration (20%), and a short generic commit-message list (15%). Signals requiring missing commit metadata are excluded and remaining available signals are reweighted; missing history therefore does not lower the source-signal score by itself. Repeated structures and commit patterns are weak observations with common human-written explanations. README text is excluded from source-code evidence.
+Compare two report identifiers. The request body contains an `ids` array with exactly two valid analysis IDs:
 
-The dashboard distinguishes three concepts:
+```json
+{
+  "ids": ["ANALYSIS_ID_1", "ANALYSIS_ID_2"]
+}
+```
 
-- **AI-generation estimate:** a deterministic observed-signal score and band, not a statistically calibrated probability.
-- **Evidence confidence:** completeness of the source sample and available GitHub metadata. ZIP reports mark commit history not applicable.
-- **Analysis/repository coverage:** discovered, eligible, analyzed, skipped, inaccessible files, and retrieved/detailed commit counts.
+Other workspace endpoints support report intelligence, findings, dependency/advisory data, and optional report-grounded questions. See `server/src/index.ts` for the current route definitions.
 
-When there is too little readable source or history to support even a descriptive repository-level estimate, the report says **Insufficient evidence**. The same heuristic output is deterministic for identical inputs. Tests use a hand-written local fixture (origin documented inline) and a synthetic, explicitly attributed marker fixture; these fixtures verify behavior and are not a validated AI-vs-human benchmark.
+## 📏 Analysis methodology and limits
 
-**The AI-generation score is a heuristic and is not proof of AI authorship.** Similar code can result from templates, conventions, generated files, or human work. A low score does not prove that AI was not used. Sampling and incomplete history can affect the result.
+- GitHub repository trees may be truncated by GitHub; RepoScope surfaces incomplete coverage.
+- The application retrieves up to 500 default-branch commits and requests detailed file-change statistics for the latest 20 commits to bound API usage.
+- Source files are sampled using configuration prioritization and round-robin source-folder sampling. The default is 25 files, with a configurable per-file byte limit.
+- Lockfiles, generated/minified files, dependency/vendor directories, build output, unsupported formats, binary content, and oversized files are excluded from ordinary source signals and reported as applicable.
+- ZIP entries are inspected without extracting the complete archive. The archive is streamed to a temporary file, paths and symlinks are checked, and only a bounded sample is read. Temporary uploads are removed after processing.
+- The 3 GiB ZIP setting is an application limit, **not a guarantee that every hosting provider or reverse proxy accepts a 3 GiB request**. Configure request-body limits, timeouts, disk capacity, and concurrency for your deployment. Many serverless/static platforms have lower request-size limits.
+- Website inspection is limited to public HTTP(S), rejects credentials and local hostnames, disables redirects, applies a timeout, and inspects only a bounded amount of HTML. Some websites may block requests or be unreachable.
+- Technology detection uses observed manifests/configuration and limited source fingerprints. Missing detection is not proof that a technology is absent.
+- AI-generation signals are deterministic heuristics based on observable source/history patterns. Templates, conventions, generated code, and human-written code can produce similar signals. The score is **not proof of AI authorship**.
+- Project Health is an internal heuristic, not an industry-standard grade or a substitute for manual code, security, or maintenance review.
+- Incomplete source samples and missing commit metadata can reduce evidence confidence. Reports distinguish signal scores from evidence confidence and repository coverage.
 
-### Project health
+## 🔐 Security and privacy
 
-The Project Health Score is an internal heuristic informed by README presence, tests, CI configuration, source structure, commit history, and recent activity. It is not an industry standard or a substitute for a security, quality, or maintenance review.
+- Keep all tokens and API keys in server-side environment variables.
+- Do not commit `.env` or add secrets to frontend `VITE_*` variables.
+- ZIP uploads are treated as untrusted data; uploaded code is never executed.
+- Archive paths and symlinks are validated, and analysis uses bounded file/content budgets.
+- Optional website inspection targets public HTTP(S) pages and applies input and network safeguards.
+- Review deployment storage, access control, logging, and resource limits before using RepoScope with sensitive or high-volume workloads.
 
-## Security and privacy
+## 🌍 Deployment notes
 
-- GitHub tokens are only read by the server and are not returned to the client or included in application logs.
-- Only public GitHub repositories can be analyzed unless the server token has access; private repository support is not exposed by the URL-only flow.
-- Website analysis is limited to public page metadata and resource fingerprints. It does not scan ports, bypass authentication, or exploit the target.
-- No source is sent to an external AI service. The deterministic heuristic runs locally in the application server.
-- ZIP handling uses disk-backed multipart uploads and streamed sampled entry reads. Path traversal and symlink entries are rejected; source is never extracted or executed. Per-file, suspicious-compression, and bounded sample budgets can exclude individual files and mark coverage partial, while the compressed archive cap remains 3 GiB. Archive entry metadata remains proportional to entry count. The 3 GiB ceiling applies only when the full deployment path supports it; this checkout does not identify a deployed host.
-- Public website DNS results are validated and the selected public address is pinned for the HTTP request; redirects are not followed. Continue to apply outbound network restrictions in production.
-- Website URLs are untrusted input. For public production deployments, enforce egress firewall rules that block private, link-local, and metadata IP ranges as an additional SSRF boundary.
+### Frontend
 
-## Current limitations / future improvements
+Build the Vite application:
 
-Analysis is limited to the default branch and a bounded recent commit sample. Source heuristics are not a reliable authorship detector and have not been calibrated against a representative labeled corpus. ZIP archives have no Git history unless a user separately analyzes the repository through GitHub. Browser screenshot automation is not included in the current toolchain; layout adapts at desktop, tablet, and mobile breakpoints and the reveal/ambient effects respect `prefers-reduced-motion`.
+```bash
+npm run build
+```
 
+The static frontend output is in `dist/`. Set `VITE_API_BASE_URL` to the public backend base URL if your deployment uses an absolute API URL. For local development, the default empty value uses the Vite `/api` proxy.
 
-## Code intelligence workspace
+### Backend
 
-The dashboard includes a graph view built from resolved static JS/TS import patterns and recognized Express route declarations. Unresolved local imports remain explicit. Dynamic and runtime relationships are not inferred. Security checks are heuristic pattern matches with redacted evidence; they require manual verification and are not a certification. Maintainability checks flag large files and long function-like blocks. Dependency intelligence reads declared dependencies in sampled package.json manifests and can resolve npm direct/transitive versions from package-lock.json when available and under 5 MB. A lockfile license field is displayed only when present. OSV lookup runs on demand when network access is available; skipped versions and request failures are not evidence of safety. The risk panel summarizes observed static findings with a capped per-file heuristic score.
+Deploy the Node.js API as a persistent Node service and run:
 
-Saved report summaries keep identifiers in local browser storage. Server reports use a process-local cache by default; set `REPORT_STORE_PATH` to persist the latest 50 normalized report JSON files on a protected persistent volume. This is single-instance file storage without user accounts or access control; do not expose it to untrusted users. Comparison now returns file path/size, technology, dependency, and finding changes, but source text is not retained so content diffs are unavailable. HTML reports and browser print-to-PDF are available. Repository replay retrieves actual changed-file patches from GitHub on demand for commits in the report; it does not reconstruct full historical source snapshots. Chat is optional; without provider variables it falls back to report-fact answers, and it receives report metadata and finding summaries only; source text is not retained or sent.
+```bash
+npm run build
+npm start
+```
 
+Set `CLIENT_ORIGIN` to the exact deployed frontend origin, for example `https://your-frontend.onrender.com`. Set optional server secrets through your hosting provider's environment settings. If you enable `REPORT_STORE_PATH`, use a durable protected disk.
 
+> **Large ZIP uploads:** verify the limits of your host, load balancer, and proxy before advertising support for 3 GiB uploads. Application configuration alone cannot override a platform's request-body limits.
 
+## 🧪 Development commands
 
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Starts the API and Vite frontend in watch mode. |
+| `npm run dev:server` | Starts the Express API in watch mode. |
+| `npm run dev:web` | Starts the Vite development server. |
+| `npm run build` | Type-checks the frontend, builds the frontend, and compiles the server. |
+| `npm start` | Starts the compiled API. |
+| `npm test` | Runs the Vitest test suite. |
+| `npm run preview` | Previews the production frontend build locally. |
 
+## 🤝 Contributing
 
+Contributions, bug reports, and ideas are welcome.
 
+1. Fork the repository.
+2. Create a focused branch: `git checkout -b feat/your-change`.
+3. Make your change and add/update tests where practical.
+4. Run `npm test` and `npm run build`.
+5. Commit with a clear message and push your branch.
+6. Open a pull request describing the problem, the approach, and any testing performed.
+
+Please avoid committing secrets, generated build output, uploaded archives, or local environment files.
+
+## 🗺️ Roadmap ideas
+
+- More language-specific analyzers and richer dependency ecosystem support.
+- Improved architecture relationship inference with clearer evidence links.
+- Optional durable report storage backed by a dedicated database.
+- Additional export formats and comparison views.
+- More extensive tests for large repositories, incomplete GitHub metadata, and deployment-specific upload limits.
+
+## 📄 License
+
+Check the repository's license file (if present) before redistributing or using this project. If no license is included, do not assume that the source is licensed for unrestricted reuse.
+
+---
+
+<p align="center">
+  Built to make repository exploration clearer, more explainable, and more useful for developers.
+</p>
