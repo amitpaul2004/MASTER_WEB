@@ -88,7 +88,7 @@ Request JSON:
 
 ```json
 {
-  "repositoryUrl": "https://github.com/owner/repository",
+  "repositoryUrl": "https://github.com/amitpaul2004/MASTER_WEBowner/repository",
   "websiteUrl": "https://example.com"
 }
 ```
